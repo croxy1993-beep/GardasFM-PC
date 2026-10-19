@@ -1,6 +1,7 @@
 """
-Gardaş FM 4.4 - mp3 gerekmez, şarkılar internetten (YouTube) çalınır; istersen indirip internetsiz dinlersin.
+Gardaş FM 4.5 - mp3 gerekmez, şarkılar internetten (YouTube) çalınır; istersen indirip internetsiz dinlersin.
 
+4.5: Yedekle/geri yükle, "Neler yeni" penceresi, Discord'da dinlediğin şarkı
 4.4: GitHub'dan otomatik güncelleme (favoriler, mixler, listeler, ayarlar korunur)
 
 4.0 yenilikleri:
@@ -32,6 +33,7 @@ import random
 import time
 import re
 import shutil
+import zipfile
 import threading
 import queue
 import subprocess
@@ -205,12 +207,85 @@ BG_DIR = DATA_DIR / "arkaplan"
 DL_DIR = DATA_DIR / "indirilenler"
 COVER_DIR = DL_DIR / "kapaklar"
 # ---- Sürüm ve GitHub otomatik güncelleme ayarı: sadece GITHUB_REPO satırını kendi deponla değiştir ----
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 GITHUB_REPO = "croxy1993-beep/GardasFM-PC"   # GitHub deposu: kullanici/depo
 GITHUB_BRANCH = "main"
 GITHUB_FILE = "gardas_fm.py"                 # depoda uygulama dosyasının yolu (kökteyse böyle kalsın)
 BACKUP_DIR = DATA_DIR / "yedek"
 USER_DATA_FILES = ["mix_listem.json", "calma_listeleri.json", "ayarlar.json", "indirilenler.json", "sozler.json"]
+RESTORE_FILES = ["mix_listem.json", "calma_listeleri.json", "ayarlar.json", "sozler.json"]   # "Yedekle" dosyasına girenler
+PENDING_RESTORE = DATA_DIR / "geri_yukle.zip"          # geri yüklenecek yedek: bir sonraki açılışta uygulanır
+DISCORD_CLIENT_ID = ""                                 # boş bırak; kimliği Ayarlar > Discord bölümünden de girebilirsin
+
+WHATS_NEW = [   # en yeni sürüm en üstte
+    ("4.5", ["Yedekle / geri yükle: Ayarlar'dan favorilerini, listelerini ve ayarlarını tek dosyaya yedekle, istediğin zaman geri yükle.",
+             "Neler yeni penceresi: güncelleme sonrası ilk açılışta yenilikleri burada görürsün.",
+             "Discord durumu: dinlediğin şarkı Discord profilinde görünür (Ayarlar > Discord)."]),
+    ("4.4", ["GitHub'dan otomatik güncelleme: Gardaş FM günde bir kez yeni sürümü denetler ve kendini günceller.",
+             "Güncellemeden önce favoriler ve listeler 'yedek' klasörüne kopyalanır."]),
+]
+
+
+def _backup_user_data():
+    """Favoriler, mixler, çalma listeleri ve ayarlar 'yedek' klasörüne kopyalanır (son 5 yedek kalır)."""
+    try:
+        d = BACKUP_DIR / time.strftime("%Y%m%d_%H%M%S")
+        d.mkdir(parents=True, exist_ok=True)
+        for n in USER_DATA_FILES:
+            f = DATA_DIR / n
+            if f.exists():
+                shutil.copy2(f, d / n)
+        olds = sorted(p for p in BACKUP_DIR.iterdir() if p.is_dir())
+        for p in olds[:-5]:
+            shutil.rmtree(p, ignore_errors=True)
+        return True
+    except Exception as ex:
+        print("Yedek alınamadı:", ex)
+        return False
+
+
+def _read_backup_zip(path):
+    """Yedek zip'ini doğrular; {dosya_adı: bayt} döndürür, geçersizse None. Sadece bilinen dosya adları okunur."""
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+        if "yedek_bilgi.json" not in names:
+            return None
+        info = json.loads(zf.read("yedek_bilgi.json").decode("utf-8-sig"))
+        if info.get("uygulama") != "GardasFM":
+            return None
+        out = {}
+        for n in RESTORE_FILES:
+            if n in names:
+                if zf.getinfo(n).file_size > 100 * 1024 * 1024:
+                    return None
+                data = zf.read(n)
+                json.loads(data.decode("utf-8-sig"))      # bozuk dosya geri yüklenmesin
+                out[n] = data
+        return out or None
+
+
+def _apply_pending_restore():
+    """Açılışta, hiçbir veri okunmadan önce: bekleyen yedeği uygular (şu anki veriler önce yedeklenir)."""
+    if not PENDING_RESTORE.exists():
+        return
+    try:
+        files = _read_backup_zip(PENDING_RESTORE)
+        if files:
+            _backup_user_data()
+            for n, data in files.items():
+                tmp = DATA_DIR / (n + ".tmp")
+                tmp.write_bytes(data)
+                os.replace(tmp, DATA_DIR / n)
+    except Exception as ex:
+        print("Yedek geri yüklenemedi:", ex)
+    finally:
+        try:
+            PENDING_RESTORE.unlink()
+        except Exception:
+            pass
+
+
+_apply_pending_restore()
 AUDIO_EXT = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".webm", ".aac", ".wma"}
 
 
@@ -329,7 +404,8 @@ BODY_FONT = "Segoe UI"
 
 DEFAULT_CFG = {"volume": 70, "shuffle": False, "repeat": 0, "view": HOME, "bg": "", "dim": 0.45,
                "blur": 6, "intro": True, "searches": [], "recent": [], "theme": "Gece İstanbul",
-               "eq": "Düz", "rate": 1.0, "offline": False, "tray": False, "plays": [], "ytdlp_day": 0.0, "auto_update": True, "update_day": 0.0}
+               "eq": "Düz", "rate": 1.0, "offline": False, "tray": False, "plays": [], "ytdlp_day": 0.0, "auto_update": True, "update_day": 0.0,
+               "discord": False, "discord_id": "", "last_seen": ""}
 
 THEMES = {
     "Gece İstanbul": ("#ff4f8b", (255, 79, 139), "#ffc857"),
@@ -1297,6 +1373,14 @@ class GardasFM(ctk.CTk):
         self.after(1500, self.net_check)
         self.after(6000, self.maybe_update_ytdlp)
         self.after(9000, self.maybe_update_app)
+        self._dc_rpc = None
+        self._dc_key = None
+        self._dc_last = 0.0
+        self._dc_fail = 0.0
+        self._dc_warned = False
+        self._dc_lock = threading.Lock()
+        self.after(3000, self.maybe_show_whats_new)
+        self.after(8000, self.discord_tick)
         self.start_media_keys()
         self.start_intro()
 
@@ -1374,6 +1458,10 @@ class GardasFM(ctk.CTk):
         try:
             if self._tray is not None:
                 self._tray.stop()
+            if self._dc_rpc is not None:
+                t = threading.Thread(target=self.discord_close, daemon=True)
+                t.start()
+                t.join(1.0)
             self.player.stop()
             self.pool.shutdown(wait=False, cancel_futures=True)   # bekleyen link çözme işleri çıkışı geciktirmesin
             self.dl_pool.shutdown(wait=False, cancel_futures=True)
@@ -1695,6 +1783,38 @@ class GardasFM(ctk.CTk):
         row3.pack(fill="x", padx=18, pady=(6, 0))
         btn(row3, "yt-dlp'yi şimdi güncelle", self.update_ytdlp)
         btn(row3, f"Gardaş FM güncellemesini denetle (v{APP_VERSION})", lambda: self.update_app(silent=False))
+        btn(row3, "Neler yeni?", lambda: self.show_whats_new())
+
+        head("YEDEK")
+        row4 = ctk.CTkFrame(box, fg_color="transparent")
+        row4.pack(fill="x", padx=18, pady=(2, 0))
+        btn(row4, "Yedekle...", self.backup_to_zip)
+        btn(row4, "Yedekten geri yükle...", self.restore_from_zip)
+        ctk.CTkLabel(box, text="Favoriler, çalma listeleri, ayarlar ve kayıtlı sözler tek bir .zip dosyasına yedeklenir.",
+                     text_color=MUTED, wraplength=380, justify="left",
+                     font=ctk.CTkFont(BODY_FONT, 11)).pack(anchor="w", padx=18, pady=(4, 0))
+
+        head("DISCORD")
+        switch("Discord durumumda dinlediğim şarkıyı göster", "discord", extra=self.discord_toggled)
+        row5 = ctk.CTkFrame(box, fg_color="transparent")
+        row5.pack(fill="x", padx=18, pady=(2, 0))
+        ent = ctk.CTkEntry(row5, width=230, height=34, placeholder_text="Discord uygulama kimliği")
+        ent.pack(side="left", padx=(0, 10))
+        if self.cfg.get("discord_id"):
+            ent.insert(0, self.cfg["discord_id"])
+
+        def save_dc_id():
+            self.cfg["discord_id"] = re.sub(r"\D", "", ent.get())
+            self.save_cfg()
+            self._dc_key = None
+            self._dc_fail = 0.0
+            self._dc_warned = False
+            self.flash("Discord kimliği kaydedildi" if self.cfg["discord_id"] else "Discord kimliği silindi")
+        btn(row5, "Kaydet", save_dc_id)
+        ctk.CTkLabel(box, text="Kimlik için: discord.com/developers/applications > New Application (adı: Gardaş FM) "
+                               "> General Information > Application ID'yi kopyalayıp buraya yapıştır. Discord uygulaması açık olmalı.",
+                     text_color=MUTED, wraplength=380, justify="left",
+                     font=ctk.CTkFont(BODY_FONT, 11)).pack(anchor="w", padx=18, pady=(4, 0))
         ctk.CTkLabel(box, text=f"Veri klasörü: {DATA_DIR}", text_color=MUTED, wraplength=380, justify="left",
                      font=ctk.CTkFont(BODY_FONT, 11)).pack(anchor="w", padx=18, pady=(12, 4))
         ctk.CTkButton(win, text="Kapat", height=36, corner_radius=18, fg_color=BTN, hover_color="#33296b",
@@ -3380,6 +3500,208 @@ class GardasFM(ctk.CTk):
         self.bind_all("<d>", key(lambda: self.download()))
         self.bind_all("<f>", key(lambda: self.toggle_fav()))
 
+    # ------------------------------------------------------------ yedekle / geri yükle
+    def backup_to_zip(self):
+        """Favoriler, çalma listeleri, ayarlar ve kayıtlı sözler tek bir zip dosyasına yedeklenir."""
+        try:
+            self.save_cfg()
+            self.save_mix()
+            self.save_playlists()
+        except Exception:
+            traceback.print_exc()
+        path = filedialog.asksaveasfilename(parent=self, title="Yedeği kaydet", defaultextension=".zip",
+                                            initialfile=f"GardasFM_yedek_{time.strftime('%Y-%m-%d')}.zip",
+                                            filetypes=[("Gardaş FM yedeği", "*.zip")])
+        if not path:
+            return
+        try:
+            n_ok = 0
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("yedek_bilgi.json", json.dumps(
+                    {"uygulama": "GardasFM", "surum": APP_VERSION, "tarih": time.strftime("%Y-%m-%d %H:%M:%S")},
+                    ensure_ascii=False))
+                for n in RESTORE_FILES:
+                    f = DATA_DIR / n
+                    if f.exists():
+                        zf.write(f, n)
+                        n_ok += 1
+            self.flash(f"Yedek kaydedildi ({n_ok} dosya): {Path(path).name}", 7000)
+        except Exception as ex:
+            self.flash(f"Yedek alınamadı: {ex}", 8000)
+
+    def restore_from_zip(self):
+        path = filedialog.askopenfilename(parent=self, title="Yedek dosyasını seç",
+                                          filetypes=[("Gardaş FM yedeği", "*.zip")])
+        if not path:
+            return
+        try:
+            files = _read_backup_zip(path)
+        except Exception:
+            files = None
+        if not files:
+            messagebox.showerror("Gardaş FM", "Bu dosya geçerli bir Gardaş FM yedeği değil.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "Yedekten geri yükle",
+                "Yedekteki favoriler, listeler ve ayarlar şu anki verilerinin yerine geçecek "
+                "(şu anki verilerin 'yedek' klasörüne kopyalanır).\n\n"
+                "Bunun için uygulama kapanacak, sonra tekrar açmalısın. Devam edilsin mi?", parent=self):
+            return
+        try:
+            shutil.copy2(path, PENDING_RESTORE)
+        except Exception as ex:
+            self.flash(f"Geri yükleme hazırlanamadı: {ex}", 8000)
+            return
+        self.quit_app()
+
+    # ------------------------------------------------------------ "Neler yeni" penceresi
+    def show_whats_new(self, only_new=False):
+        last = self.cfg.get("last_seen", "")
+        if only_new:
+            items = [x for x in WHATS_NEW if self._ver_tuple(x[0]) > self._ver_tuple(last)] if last else WHATS_NEW[:1]
+        else:
+            items = WHATS_NEW
+        if not items:
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("Neler yeni")
+        win.geometry("460x500")
+        win.configure(fg_color=PANEL)
+        win.transient(self)
+        win.after(150, win.lift)
+        box = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=6, pady=(6, 0))
+        ctk.CTkLabel(box, text=f"Gardaş FM {APP_VERSION} - neler yeni", font=ctk.CTkFont(HEAD_FONT, 20, "bold"),
+                     text_color=GOLD).pack(anchor="w", padx=18, pady=(14, 8))
+        for v, lines in items:
+            ctk.CTkLabel(box, text=f"Sürüm {v}", text_color=ACCENT,
+                         font=ctk.CTkFont(BODY_FONT, 13, "bold")).pack(anchor="w", padx=18, pady=(12, 2))
+            for ln in lines:
+                ctk.CTkLabel(box, text="•  " + ln, text_color=SOFT, wraplength=380, justify="left", anchor="w",
+                             font=ctk.CTkFont(BODY_FONT, 12)).pack(anchor="w", padx=22, pady=3)
+        ctk.CTkButton(win, text="Tamam", height=36, corner_radius=18, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=win.destroy).pack(anchor="e", padx=24, pady=12)
+
+    def maybe_show_whats_new(self, tries=0):
+        """Güncellemeden sonraki ilk açılışta yenilikleri gösterir (açılış animasyonu bitince)."""
+        if self.cfg.get("last_seen") == APP_VERSION:
+            return
+        intro = getattr(self, "intro", None)
+        if intro is not None and getattr(intro, "alive", False) and tries < 40:
+            self.after(2000, lambda: self.maybe_show_whats_new(tries + 1))
+            return
+        try:
+            self.show_whats_new(only_new=True)
+        except Exception:
+            traceback.print_exc()
+        self.cfg["last_seen"] = APP_VERSION
+        self.save_cfg()
+
+    # ------------------------------------------------------------ Discord durumu (Rich Presence)
+    def _discord_id(self):
+        return re.sub(r"\D", "", str(self.cfg.get("discord_id") or DISCORD_CLIENT_ID or ""))
+
+    def discord_toggled(self):
+        self._dc_key = None
+        self._dc_fail = 0.0
+        if not self.cfg.get("discord"):
+            threading.Thread(target=self.discord_close, daemon=True).start()
+        elif not self._discord_id():
+            self.flash("Önce aşağıya Discord uygulama kimliğini yazıp Kaydet'e bas", 8000)
+
+    def discord_tick(self):
+        """5 sn'de bir bakar; şarkı ya da çalıyor/duraklatıldı durumu değiştiyse Discord'a bildirir."""
+        try:
+            if self.cfg.get("discord") and self._discord_id() and time.time() >= self._dc_fail:
+                cur = self.play_items[self.play_idx] if 0 <= self.play_idx < len(self.play_items) else None
+                state = self.player.get_state()
+                playing = bool(self.player.is_playing()) or state in (vlc.State.Opening, vlc.State.Buffering)
+                if cur is None or state in (vlc.State.Stopped, vlc.State.Ended, vlc.State.NothingSpecial):
+                    key = None
+                else:
+                    key = (cur.get("title"), cur.get("artist"), playing)
+                if key != self._dc_key and time.time() - self._dc_last >= 15:      # Discord ~15 sn'de bir güncelleme kabul eder
+                    payload = None
+                    if key is not None:
+                        length = self.player.get_length()
+                        pos = max(0.0, self.player.get_position()) * length / 1000 if length > 0 else 0
+                        payload = {"title": cur.get("title"), "artist": cur.get("artist"),
+                                   "playing": playing, "start": int(time.time() - pos)}
+                    self._dc_key = key
+                    self._dc_last = time.time()
+                    threading.Thread(target=self.discord_push, args=(payload,), daemon=True).start()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.after(5000, self.discord_tick)
+
+    def discord_push(self, payload):
+        with self._dc_lock:
+            try:
+                if self._dc_rpc is None:
+                    if payload is None:
+                        return
+                    try:
+                        from pypresence import Presence
+                    except ImportError:
+                        subprocess.run([sys.executable, "-m", "pip", "install", "pypresence"],
+                                       capture_output=True, timeout=180)
+                        import importlib
+                        importlib.invalidate_caches()
+                        from pypresence import Presence
+                    rpc = Presence(self._discord_id())
+                    rpc.connect()
+                    self._dc_rpc = rpc
+                if payload is None:
+                    self._dc_rpc.clear()
+                    return
+
+                def fit(txt, default):
+                    txt = (txt or "").strip() or default
+                    txt = txt[:120]
+                    return txt if len(txt) >= 2 else txt + " "
+                artist = fit(payload.get("artist"), "Gardaş FM")
+                kw = {"details": fit(payload.get("title"), "Şarkı"),
+                      "state": artist if payload["playing"] else fit(artist + " (duraklatıldı)", "Duraklatıldı"),
+                      "large_text": "Gardaş FM"}
+                if payload["playing"]:
+                    kw["start"] = payload["start"]
+                try:
+                    from pypresence import ActivityType
+                    kw["activity_type"] = ActivityType.LISTENING      # "Gardaş FM dinliyor"
+                except Exception:
+                    pass
+                try:
+                    self._dc_rpc.update(**kw)
+                except TypeError:
+                    kw.pop("activity_type", None)
+                    self._dc_rpc.update(**kw)
+            except Exception as ex:
+                print("Discord durumu güncellenemedi:", ex)
+                try:
+                    if self._dc_rpc is not None:
+                        self._dc_rpc.close()
+                except Exception:
+                    pass
+                self._dc_rpc = None
+                self._dc_key = None
+                self._dc_fail = time.time() + 60
+                if not self._dc_warned:
+                    self._dc_warned = True
+                    self.ui(lambda: self.flash("Discord'a bağlanılamadı (Discord açık mı? Kimlik doğru mu?)", 8000))
+
+    def discord_close(self):
+        try:
+            if self._dc_rpc is not None:
+                try:
+                    self._dc_rpc.clear()
+                except Exception:
+                    pass
+                self._dc_rpc.close()
+        except Exception:
+            pass
+        self._dc_rpc = None
+
     # ------------------------------------------------------------ uygulama güncellemesi (GitHub)
     @staticmethod
     def _ver_tuple(v):
@@ -3401,21 +3723,7 @@ class GardasFM(ctk.CTk):
         self.update_app(silent=True)
 
     def backup_user_data(self):
-        """Favoriler, mixler, çalma listeleri ve ayarlar güncellemeden önce yedek klasörüne kopyalanır."""
-        try:
-            d = BACKUP_DIR / time.strftime("%Y%m%d_%H%M%S")
-            d.mkdir(parents=True, exist_ok=True)
-            for n in USER_DATA_FILES:
-                f = DATA_DIR / n
-                if f.exists():
-                    shutil.copy2(f, d / n)
-            olds = sorted(p for p in BACKUP_DIR.iterdir() if p.is_dir())
-            for p in olds[:-5]:         # sadece son 5 yedek kalsın
-                shutil.rmtree(p, ignore_errors=True)
-            return True
-        except Exception as ex:
-            print("Yedek alınamadı:", ex)
-            return False
+        return _backup_user_data()
 
     def update_app(self, silent=False):
         if "KULLANICI_ADIN" in GITHUB_REPO:
