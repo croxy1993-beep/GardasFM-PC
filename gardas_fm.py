@@ -1,6 +1,7 @@
 """
-Gardaş FM 5.0 - mp3 gerekmez, şarkılar internetten (YouTube) çalınır; istersen indirip internetsiz dinlersin.
+Gardaş FM 5.1 - mp3 gerekmez, şarkılar internetten (YouTube) çalınır; istersen indirip internetsiz dinlersin.
 
+5.1: Neon cam arayüz (pembeden maviye parlayan kenarlıklı paneller, ikonlu menü, mavi çubuklar, neon kapak ve söz kartı)
 5.0: Yeni arayüz (neon cam paneller, yeni temalar), daha fazla animasyon (Tam/Hafif/Kapalı), şarkı değişince bildirim,
      ruh haline göre mix, şarkı etiketleri, güvenli güncelleme (açılmazsa eski sürüme otomatik dönüş)
 4.7: Ayarlar'dan masaüstüne kısayol oluşturma (konsol penceresi açmadan, logolu simgeyle)
@@ -255,7 +256,7 @@ BG_DIR = DATA_DIR / "arkaplan"
 DL_DIR = DATA_DIR / "indirilenler"
 COVER_DIR = DL_DIR / "kapaklar"
 # ---- Sürüm ve GitHub otomatik güncelleme ayarı: sadece GITHUB_REPO satırını kendi deponla değiştir ----
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 GITHUB_REPO = "croxy1993-beep/GardasFM-PC"   # GitHub deposu: kullanici/depo
 GITHUB_BRANCH = "main"
 GITHUB_FILE = "gardas_fm.py"                 # depoda uygulama dosyasının yolu (kökteyse böyle kalsın)
@@ -274,6 +275,7 @@ MOODS = [   # (ad, alt yazı, katalog kategorileri, etiket): ana sayfadaki ruh h
 ]
 
 WHATS_NEW = [   # en yeni sürüm en üstte
+    ("5.1", ["Neon cam arayüz: paneller pembeden maviye geçişli, parlayan kenarlıklı cam gibi. Menüde ikonlar, seçili satırda pembe çizgi, mavi ilerleme ve ses çubukları, neon kapak çerçevesi ve mavi söz satırı."]),
     ("5.0", ["Yeni arayüz: neon kenarlıklı cam paneller, yeni başlık yazı tipi, tema renginden boyanan arka plan ışıkları ve 4 yeni tema (Neon Siber, Kırmızı Kadife, Gece Mavisi, Altın Saat).",
             "Daha fazla animasyon: sayfa başlıkları süzülerek gelir, kapak yeni şarkıda yumuşakça değişir, menüde seçim çubuğu kayar. Ayarlar'dan Tam / Hafif / Kapalı seçebilirsin.",
             "Şarkı değişince bildirim: uygulama arkadayken köşede kapaklı küçük bir kart çıkar, tıklayınca uygulama açılır.",
@@ -491,6 +493,10 @@ if _th:                                  # tema, arayüz kurulmadan önce uygula
 ACCENT_HOVER = "#%02x%02x%02x" % tuple(int(c * 0.88) for c in ACCENT_RGB)
 GOLD_RGB = tuple(int(GOLD[i:i + 2], 16) for i in (1, 3, 5))
 EDGE = tuple(ACCENT_RGB) + (78,)          # panellerin neon kenar çizgisi (tema rengi)
+_hh = colorsys.rgb_to_hsv(*[c / 255 for c in ACCENT_RGB])[0] * 360
+NEON2 = "#4db8ff" if (_hh < 150 or _hh > 290) else "#ff5fa2"          # kenar çizgisinin ikinci rengi (pembe temada mavi)
+NEON2_RGB = tuple(int(NEON2[i:i + 2], 16) for i in (1, 3, 5))
+NEON2_DIM = "#%02x%02x%02x" % tuple(int(c * 0.55 + p * 0.45) for c, p in zip(NEON2_RGB, (20, 16, 46)))
 
 ctk.set_appearance_mode("dark")
 
@@ -1191,15 +1197,48 @@ def rr_points(x1, y1, x2, y2, r):
             x1, y2 - r, x1, y1 + r, x1, y1 + r, x1, y1]
 
 
+def _neon_edges(img, boxes):
+    """Panel kenarlarına üstte tema rengi, altta ikinci renk (pembe -> mavi) geçişli, parlayan çizgi ekler."""
+    W, H = img.size
+    edge = Image.new("RGB", (W, H), (0, 0, 0))
+    emask = Image.new("L", (W, H), 0)
+    for (x1, y1, x2, y2), r in boxes:
+        w, h = int(x2 - x1) + 1, int(y2 - y1) + 1
+        if w < 12 or h < 12:
+            continue
+        m = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(m).rounded_rectangle((0, 0, w - 1, h - 1), radius=r, outline=255, width=2)
+        col = Image.composite(Image.new("RGB", (w, h), NEON2_RGB), Image.new("RGB", (w, h), tuple(ACCENT_RGB)),
+                              Image.linear_gradient("L").resize((w, h)))
+        try:
+            edge.paste(col, (int(x1), int(y1)), m)
+            emask.paste(m, (int(x1), int(y1)), m)
+        except Exception:
+            pass
+    gw, gh = max(2, W // 2), max(2, H // 2)
+    glow = edge.resize((gw, gh), Image.Resampling.BILINEAR).filter(ImageFilter.GaussianBlur(5))
+    glow = glow.resize((W, H), Image.Resampling.BILINEAR).point(lambda v: min(255, int(v * 1.45)))
+    out = ImageChops.add(img, glow)
+    out.paste(edge, (0, 0), emask)
+    return out
+
+
 def glass(base, shapes):
     """Fotoğrafın üstüne yarı saydam 'cam' şekiller koyar.
-    shapes = [(kutu, köşe_yarıçapı, rgb, saydamlık_0_255, kenar_çizgi_saydamlığı), ...]"""
+    shapes = [(kutu, köşe_yarıçapı, rgb, saydamlık_0_255, kenar), ...]
+    kenar: 0 (yok) | beyaz çizgi saydamlığı (sayı) | (r, g, b, a) | "neon" (parlayan pembe-mavi çizgi)"""
     over = Image.new("RGBA", base.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(over)
+    neon = []
     for box, r, rgb, alpha, line in shapes:
+        if isinstance(line, str):
+            d.rounded_rectangle(box, radius=r, fill=tuple(rgb) + (alpha,))
+            neon.append((box, r))
+            continue
         outline = (line if isinstance(line, tuple) else (255, 255, 255, line)) if line else None
         d.rounded_rectangle(box, radius=r, fill=tuple(rgb) + (alpha,), outline=outline, width=1)
-    return Image.alpha_composite(base.convert("RGBA"), over).convert("RGB")
+    out = Image.alpha_composite(base.convert("RGBA"), over).convert("RGB")
+    return _neon_edges(out, neon) if neon else out
 
 
 _default_cache = {}
@@ -1976,7 +2015,7 @@ class GardasFM(ctk.CTk):
 
         def fixed(option):
             return [e for e in st.map("Treeview", query_opt=option) if e[:2] != ("!disabled", "!selected")]
-        st.map("Treeview", background=[("selected", ACCENT)] + fixed("background"),
+        st.map("Treeview", background=[("selected", _mix(PANEL, ACCENT, 0.36))] + fixed("background"),
                foreground=[("selected", "white")] + fixed("foreground"))
 
     def build_sidebar(self):
@@ -2010,6 +2049,7 @@ class GardasFM(ctk.CTk):
         def tool_btn(text, cmd, primary=False, parent=None):
             ctk.CTkButton(parent or tools, text=text, height=32, corner_radius=16, width=0,
                           fg_color=ACCENT if primary else BTN, hover_color=ACCENT_HOVER if primary else "#33296b",
+                          border_width=0 if primary else 1, border_color=NEON2_DIM,
                           font=ctk.CTkFont(BODY_FONT, 12, "bold" if primary else "normal"),
                           command=cmd).pack(side="left", padx=(0, 8))
         tool_btn("▶  Çal", self.play_selected, True)
@@ -2032,8 +2072,8 @@ class GardasFM(ctk.CTk):
             self.tree.column(col, width=w, anchor=anchor, stretch=stretch, minwidth=40)
         self.tree.tag_configure("alt", background=ROW_ALT)
         self.tree.grid(row=2, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
-        sb = ctk.CTkScrollbar(li, command=self.tree.yview, fg_color=PANEL, button_color=BTN,
-                              button_hover_color=MUTED)
+        sb = ctk.CTkScrollbar(li, command=self.tree.yview, fg_color=PANEL, button_color=NEON2_DIM,
+                              button_hover_color=NEON2)
         sb.grid(row=2, column=1, sticky="ns", padx=(4, 8), pady=(0, 10))
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.bind("<Double-1>", lambda e: self.play_selected())
@@ -2103,16 +2143,18 @@ class GardasFM(ctk.CTk):
         ctrl = ctk.CTkFrame(mid, fg_color="transparent")
         ctrl.grid(row=0, column=0, pady=(10, 0))
 
-        def cbtn(text, cmd, size=40, fg=BTN, hover="#33296b", font=18):
-            b = ctk.CTkButton(ctrl, text=text, width=size, height=size, corner_radius=size // 2, fg_color=fg,
-                              hover_color=hover, text_color=TEXT, font=ctk.CTkFont(BODY_FONT, font), command=cmd)
+        def cbtn(text, cmd, size=40, fg=BTN, hover="#33296b", font=18, edge=False):
+            b = ctk.CTkButton(ctrl, text=text, width=size + (16 if edge else 0), height=size,
+                              corner_radius=14 if edge else size // 2, fg_color=fg,
+                              hover_color=hover, text_color=TEXT, font=ctk.CTkFont(BODY_FONT, font), command=cmd,
+                              border_width=1 if edge else 0, border_color=NEON2)
             b.pack(side="left", padx=5)
             return b
         self.shuffle_btn = cbtn("Karışık", self.toggle_shuffle, 40, "transparent", BTN, 12)
         self.shuffle_btn.configure(width=70, text_color=MUTED)
-        cbtn("⏮", self.prev_song)
+        cbtn("⏮", self.prev_song, 42, edge=True)
         self.play_btn = cbtn("▶", self.toggle_play, 48, ACCENT, ACCENT_HOVER, 20)
-        cbtn("⏭", lambda: self.next_song())
+        cbtn("⏭", lambda: self.next_song(), 42, edge=True)
         self.repeat_btn = cbtn("Tekrar", self.toggle_repeat, 40, "transparent", BTN, 12)
         self.repeat_btn.configure(width=100, text_color=MUTED)
 
@@ -2121,8 +2163,8 @@ class GardasFM(ctk.CTk):
         prog.grid_columnconfigure(1, weight=1)
         self.time_lbl = ctk.CTkLabel(prog, text="0:00", width=44, text_color=MUTED, font=ctk.CTkFont(BODY_FONT, 12))
         self.time_lbl.grid(row=0, column=0)
-        self.slider = ctk.CTkSlider(prog, from_=0, to=1, height=14, button_color=GOLD, button_hover_color="#ffd98a",
-                                    progress_color=ACCENT, fg_color=BTN, command=self.on_seek_drag)
+        self.slider = ctk.CTkSlider(prog, from_=0, to=1, height=14, button_color=NEON2, button_hover_color="#9fdcff",
+                                    progress_color=NEON2, fg_color=BTN, command=self.on_seek_drag)
         self.slider.set(0)
         self.slider.grid(row=0, column=1, sticky="ew", padx=6)
         self.slider.bind("<ButtonPress-1>", lambda e: setattr(self, "_seeking", True))
@@ -2135,15 +2177,16 @@ class GardasFM(ctk.CTk):
 
         def rbtn(text, cmd, width):
             ctk.CTkButton(right, text=text, width=width, height=32, corner_radius=16, fg_color=BTN,
-                          hover_color="#33296b", font=ctk.CTkFont(BODY_FONT, 12), command=cmd).pack(side="left", padx=(0, 8))
+                          hover_color="#33296b", font=ctk.CTkFont(BODY_FONT, 12), command=cmd,
+                          border_width=1, border_color=NEON2_DIM).pack(side="left", padx=(0, 8))
         rbtn("EQ / Hız", self.open_audio, 70)
         rbtn("Mini", self.open_mini, 52)
         self.sleep_btn = ctk.CTkButton(right, text="Uyku: kapalı", width=88, height=32, corner_radius=16,
                                        fg_color=BTN, hover_color="#33296b", font=ctk.CTkFont(BODY_FONT, 12),
-                                       command=self.cycle_sleep)
+                                       command=self.cycle_sleep, border_width=1, border_color=NEON2_DIM)
         self.sleep_btn.pack(side="left", padx=(0, 10))
-        self.vol = ctk.CTkSlider(right, from_=0, to=100, width=90, height=14, button_color=GOLD,
-                                 progress_color=ACCENT, fg_color=BTN, command=self.on_volume)
+        self.vol = ctk.CTkSlider(right, from_=0, to=100, width=90, height=14, button_color=NEON2,
+                                 progress_color=NEON2, fg_color=BTN, command=self.on_volume)
         self.vol.set(int(self.cfg["volume"]))
         self.vol.pack(side="left", padx=4)
 
@@ -2183,18 +2226,16 @@ class GardasFM(ctk.CTk):
         self.side_scroll = min(self.side_scroll, self.side_max)
         rows = [(top + ry - self.side_scroll, label, key) for ry, label, key in rel]
         vis = [r for r in rows if r[0] >= top - S(4) and r[0] + rowh <= bottom + S(4)]
-        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), GLASS, 150, EDGE)]))
+        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), GLASS, 150, "neon")]))
         # etkin satırın arkasındaki kayan seçim hapı (hareketi _anim yapar)
         self.pill_target = next((ry for ry, _, key in vis if key == self.cur_view), None)
         self.side_geo = (S(12), w - S(12), rowh)
         if self.pill_target is not None:
             if self.pill_y is None:
                 self.pill_y = float(self.pill_target)
-            pcol = _hex(_mix_rgb((26, 20, 58), ACCENT_RGB, 0.42))
+            pcol = _hex(_mix_rgb((22, 16, 48), ACCENT_RGB, 0.22))
             cv.create_polygon(rr_points(S(12), int(self.pill_y) - S(3), w - S(12), int(self.pill_y) + rowh - S(5), S(12)),
-                              smooth=True, fill=pcol, outline="", tags="pill")
-            cv.create_polygon(rr_points(S(12), int(self.pill_y) + S(5), S(12) + S(4), int(self.pill_y) + rowh - S(13), S(2)),
-                              smooth=True, fill=ACCENT, outline="", tags="pillbar")
+                              smooth=True, fill=pcol, outline=ACCENT, width=2, tags="pill")
         tx, tsz = S(24), 26
         lg = self.logo_pil()
         if lg is not None:
@@ -2214,7 +2255,11 @@ class GardasFM(ctk.CTk):
                        fill=GOLD if off else MUTED, font=F(BODY_FONT, 13))
         for ry, label, key in vis:
             active = key == self.cur_view
-            cv.create_text(S(30), ry + S(14), text=label, anchor="w", fill=GOLD if active else TEXT,
+            tx0 = S(30)
+            if key in (HOME, SEARCH):
+                self.nav_icon(cv, key, S(30), ry + S(14), GOLD if active else SOFT)
+                tx0 = S(58)
+            cv.create_text(tx0, ry + S(14), text=label, anchor="w", fill=GOLD if active else TEXT,
                            font=F(BODY_FONT, 15, "bold" if active else "normal"))
             if key == "newlist":
                 cv.add_hit((S(12), ry - S(3), w - S(12), ry + rowh - S(5)), self.new_list_menu)
@@ -2228,6 +2273,19 @@ class GardasFM(ctk.CTk):
         yy = h - S(44)
         cv.create_text(S(30), yy + S(14), text="⚙  Ayarlar ve görünüm", anchor="w", fill=SOFT, font=F(BODY_FONT, 14))
         cv.add_hit((S(12), yy - S(4), w - S(12), yy + S(32)), self.open_settings)
+
+    def nav_icon(self, cv, kind, x, y, col):
+        """Menüdeki ev ve arama ikonları (yazı tipine bağlı olmasın diye çizilir)."""
+        S = self.S
+        w = max(1, S(2))
+        if kind == HOME:
+            cv.create_line(x, y - S(1), x + S(8), y - S(9), x + S(16), y - S(1), fill=col, width=w,
+                           capstyle="round", joinstyle="round")
+            cv.create_line(x + S(3), y - S(2), x + S(3), y + S(8), x + S(13), y + S(8), x + S(13), y - S(2),
+                           fill=col, width=w, capstyle="round", joinstyle="round")
+        else:
+            cv.create_oval(x, y - S(9), x + S(11), y + S(2), outline=col, width=w)
+            cv.create_line(x + S(9), y, x + S(15), y + S(7), fill=col, width=w, capstyle="round")
 
     def hero_title(self):
         if self.cur_view.startswith("etiket:"):
@@ -2254,7 +2312,7 @@ class GardasFM(ctk.CTk):
         px1, py1 = S(30), S(104)
         pw = min(S(600 if big else 420), w - S(30) - S(30) - S(104))
         btn = (px1 + pw + S(10), py1, px1 + pw + S(10) + S(88), py1 + ph)
-        shapes = [((0, 0, w - 1, h - 1), S(26), GLASS, 95, EDGE),
+        shapes = [((0, 0, w - 1, h - 1), S(26), GLASS, 95, "neon"),
                   ((px1, py1, px1 + pw, py1 + ph), ph // 2, PANEL_RGB, 238, 40),
                   (btn, ph // 2, ACCENT_RGB, 255, 0)]
         chips = []
@@ -2338,12 +2396,12 @@ class GardasFM(ctk.CTk):
             p = _ease((now - self.home_t0 - min(0.05 * i, 0.6)) / 0.35)
             x, y = x0 + c * (cw + gap), y0 + r * (ch + gap) + off + int((1 - p) * S(18))
             shapes.append(((x, y, x + cw, y + ch), S(22), ACCENT_RGB if accent else GLASS,
-                           int((175 if accent else 150) * p), 0 if accent else tuple(ACCENT_RGB) + (int(56 * p),)))
+                           int((175 if accent else 150) * p), 0 if accent else "neon"))
             boxes.append(((x, y, x + cw, y + ch), key, name, tag, accent, p))
         pp = _ease((now - self.home_t0 - 0.5) / 0.4)
         py = grid_bottom + off
         if top:
-            shapes.append(((x0, py, w - x0, py + panel_h), S(22), GLASS, int(150 * pp), tuple(ACCENT_RGB) + (int(56 * pp),)))
+            shapes.append(((x0, py, w - x0, py + panel_h), S(22), GLASS, int(150 * pp), "neon"))
         cv.paint(glass(base, shapes))
         hour = time.localtime().tm_hour
         selam = "Günaydın" if 5 <= hour < 12 else "İyi günler" if 12 <= hour < 18 else "İyi akşamlar" if hour < 23 else "İyi geceler"
@@ -2387,7 +2445,7 @@ class GardasFM(ctk.CTk):
 
     def draw_list(self, cv, w, h, base):
         S = self.S
-        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), PANEL_RGB, 238, EDGE)]))
+        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), PANEL_RGB, 238, "neon")]))
         cv.create_window(S(10), S(10), window=self.list_inner, anchor="nw", width=w - S(20), height=h - S(20))
 
     def placeholder_cover(self, side):
@@ -2411,13 +2469,14 @@ class GardasFM(ctk.CTk):
         cx, cy = (w - side) // 2, S(28)
         self.np_geo = (cx, cy, side)
         ly = cy + side + S(138)
-        base = glass(base, [((0, 0, w - 1, h - 1), S(26), GLASS, 150, EDGE),
-                            ((S(20), ly, w - S(20), h - S(20)), S(14), PANEL_RGB, 238, 26)])
+        base = glass(base, [((0, 0, w - 1, h - 1), S(26), GLASS, 150, "neon"),
+                            ((S(20), ly, w - S(20), h - S(20)), S(14), PANEL_RGB, 238, tuple(NEON2_RGB) + (120,))])
         sq = (ImageOps.fit(self.cover, (side, side), method=Image.Resampling.BILINEAR)
               if self.cover is not None else self.placeholder_cover(side))
         mask = Image.new("L", (side, side), 0)
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, side - 1, side - 1), radius=S(18), fill=255)
         base.paste(sq, (cx, cy), mask)
+        base = glass(base, [((cx, cy, cx + side - 1, cy + side - 1), S(18), (0, 0, 0), 0, "neon")])     # neon kapak çerçevesi
         cv.paint(base)
         now = self.play_items[self.play_idx] if 0 <= self.play_idx < len(self.play_items) else None
         ty = cy + side + S(22)
@@ -2427,14 +2486,14 @@ class GardasFM(ctk.CTk):
         title = (now["title"] if now else "Henüz bir şarkı seçilmedi")[:70]
         cv.create_text(S(28), ty + S(16), text=title, anchor="nw", fill=TEXT, width=w - S(56),
                        font=F(HEAD_FONT, 20, "bold"))
-        cv.create_text(S(28), ty + S(86), text=(now["artist"] if now else "") or "", anchor="w", fill=SOFT,
+        cv.create_text(S(28), ty + S(86), text=(now["artist"] if now else "") or "", anchor="w", fill=NEON2,
                        font=F(BODY_FONT, 15))
         cv.create_window(S(28), ly + S(8), window=self.lyrics_inner, anchor="nw",
                          width=w - S(56), height=max(S(60), h - ly - S(36)))
 
     def draw_bar(self, cv, w, h, base):
         S = self.S
-        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), PANEL_RGB, 238, EDGE)]))
+        cv.paint(glass(base, [((0, 0, w - 1, h - 1), S(26), PANEL_RGB, 238, "neon")]))
         cv.create_window(S(8), S(6), window=self.bar_inner, anchor="nw", width=w - S(16), height=h - S(12))
 
     # ------------------------------------------------------------ sayfa değiştirme ve liste
@@ -3476,7 +3535,7 @@ class GardasFM(ctk.CTk):
                 d = abs(i - self.lyr_pos)
                 emph = max(0.0, 1.0 - d)
                 k = max(0.0, 1.0 - d / 3.6)
-                base = _mix_rgb((235, 231, 255), GOLD_RGB, emph)
+                base = _mix_rgb((235, 231, 255), NEON2_RGB, emph)
                 col = _hex(_mix_rgb(PANEL_RGB, base, k))
                 fnt = self.F(fam, 14 + 4 * emph, "bold" if emph > 0.5 else "normal")
             else:
@@ -4627,7 +4686,7 @@ class GardasFM(ctk.CTk):
             d = abs(i - pos)
             emph = max(0.0, 1.0 - d)
             k = max(0.0, 1.0 - d / 4.2)
-            base = _mix_rgb((235, 231, 255), GOLD_RGB, emph)
+            base = _mix_rgb((235, 231, 255), NEON2_RGB, emph)
             col = _hex(_mix_rgb((24, 18, 44), base, k))
             cv.create_text(cx, H * 0.5 + (i - pos) * step, text=lines[i], width=int(W * 0.78), justify="center",
                            fill=col, font=self.F(BODY_FONT, int(28 + 14 * emph), "bold" if emph > 0.5 else "normal"),
