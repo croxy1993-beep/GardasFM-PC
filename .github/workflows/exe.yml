@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "launcher/**"
+      - "gardas_launcher.py"
       - ".github/workflows/exe.yml"
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
         run: pip install pyinstaller
 
       - name: EXE derle
-        run: pyinstaller --onefile --noconsole --icon=launcher/logo.ico --add-data "launcher/logo.png;launcher" launcher/gardas_launcher.py -n GardasFM
+        run: pyinstaller --onefile --noconsole --icon=logo.ico --add-data "logo.png;." gardas_launcher.py -n GardasFM
 
       - name: Release olarak yayınla
         uses: softprops/action-gh-release@v2
