@@ -1,0 +1,38 @@
+name: EXE kurulum paketi
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "launcher/**"
+      - ".github/workflows/exe.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Repoyu klonla
+        uses: actions/checkout@v4
+
+      - name: Python kurulumu
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: PyInstaller kurulumu
+        run: pip install pyinstaller
+
+      - name: EXE derle
+        run: pyinstaller --onefile --noconsole --name GardasFM --icon launcher/logo.ico --add-data "launcher/logo.png;." launcher/gardas_launcher.py
+
+      - name: Release olarak yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: installer
+          name: Gardaş FM Kurulum (EXE)
+          body: "GardasFM.exe dosyasını indirip çalıştır. İlk açılışta Python, VLC ve gerekli her şey otomatik kurulur."
+          files: dist/GardasFM.exe
+          make_latest: false
